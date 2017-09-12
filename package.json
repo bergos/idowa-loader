@@ -20,8 +20,8 @@
   },
   "homepage": "https://github.com/bergos/idowa-loader",
   "dependencies": {
-    "chrome-remote-interface": "^0.19.1",
     "commander": "^2.9.0",
+    "puppeteer": "^0.10.2",
     "shelljs": "^0.7.7"
   },
   "devDependencies": {

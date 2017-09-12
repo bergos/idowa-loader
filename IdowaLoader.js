@@ -1,8 +1,8 @@
 const fs = require('fs')
 const path = require('path')
+const puppeteer = require('puppeteer')
 const shell = require('shelljs')
 const url = require('url')
-const Chrome = require('./Chrome')
 const Promise = require('bluebird')
 
 const months = [
@@ -28,17 +28,15 @@ function filesize (filename) {
   return stats.size
 }
 
-class IdowaLoader extends Chrome {
+class IdowaLoader {
   constructor (options) {
-    options.headless = true
-
-    super(options)
-
     this.user = options.user
     this.password = options.password
     this.region = options.region
     this.output = options.output
     this.wait = options.wait || 10000
+    this.timeout = options.timeout || 120000
+    this.showWindow = options.showWindow
 
     if (IdowaLoader.laRegions.includes(this.region)) {
       this.baseUrl = IdowaLoader.baseUrlLa
@@ -50,17 +48,34 @@ class IdowaLoader extends Chrome {
     this.issueUrl = this.baseUrl + 'issue.act'
   }
 
+  start () {
+    return puppeteer.launch({
+      headless: !this.showWindow,
+      timeout: this.timeout
+    }).then((browser) => {
+      this.browser = browser
+
+      return this.browser.newPage()
+    }).then((page) => {
+      this.page = page
+    })
+  }
+
+  stop () {
+    return this.browser.close()
+  }
+
   currentIssue () {
-    return this.open(this.startUrl + '?region=' + this.region).then(() => {
-      return this.waitForSelector('div.mutationDate', this.wait)
+    return this.page.goto(this.startUrl + '?region=' + this.region, {timeout: this.timeout}).then(() => {
+      return this.page.waitForSelector('div.mutationDate')
     }).then(() => {
-      return this.evaluate(() => {
+      return this.page.evaluate(() => {
         const element = document.querySelector('div.mutationDate')
 
-        return JSON.stringify({
+        return {
           date: element.innerText,
-          id: element.parentElement.parentElement.querySelector('a[rel]').attributes.rel.value
-        })
+          id: parseInt(element.parentElement.parentElement.querySelector('a.issueLink').href.split('\'')[1])
+        }
       }).then((issue) => {
         issue.date = parseDate(issue.date)
 
@@ -70,10 +85,10 @@ class IdowaLoader extends Chrome {
   }
 
   previousIssues () {
-    return this.open(this.startUrl + '?region=' + this.region).then(() => {
-      return this.waitForSelector('#link-continous-shelf', this.wait)
+    return this.page.goto(this.startUrl + '?region=' + this.region, {timeout: this.timeout}).then(() => {
+      return this.page.waitForSelector('#link-continous-shelf')
     }).then(() => {
-      return this.evaluate(() => {
+      return this.page.evaluate(() => {
         return new Promise((resolve) => {
           let count = 0
 
@@ -88,14 +103,18 @@ class IdowaLoader extends Chrome {
 
             count++
 
-            setTimeout(loadMore, 500)
+            // wait till next issues show up
+            setTimeout(loadMore, 1000)
           }
 
           loadMore()
         })
-      }, {awaitPromise: true})
+      })
     }).then(() => {
-      return this.evaluate(() => {
+      // wait till all issues are listed
+      return Promise.delay(10000)
+    }).then(() => {
+      return this.page.evaluate(() => {
         let issues = []
         const elements = document.querySelectorAll('span.mutationDate')
 
@@ -106,7 +125,7 @@ class IdowaLoader extends Chrome {
           })
         }
 
-        return JSON.stringify(issues)
+        return issues
       }).then((issues) => {
         return issues.map((issue) => {
           issue.date = parseDate(issue.date)
@@ -138,12 +157,10 @@ class IdowaLoader extends Chrome {
   }
 
   downloadLink (id) {
-    return this.open(this.issueUrl + '?issueId=' + id).then(() => {
+    return this.page.goto(this.issueUrl + '?issueId=' + id, {timeout: this.timeout}).then(() => {
       return this.login()
     }).then((authenticated) => {
-      if (!authenticated) {
-        return this.open(this.issueUrl + '?issueId=' + id)
-      }
+      return this.page.goto(this.issueUrl + '?issueId=' + id, {timeout: this.timeout})
     }).then(() => {
       return this.login()
     }).then((authenticated) => {
@@ -151,13 +168,16 @@ class IdowaLoader extends Chrome {
         return Promise.reject(new Error('authentication failed'))
       }
     }).then(() => {
-      return this.waitForSelector('.download-link-menu', this.wait)
+      // loading the issue can take really long...
+      return Promise.delay(240000)
     }).then(() => {
-      return this.evaluate(() => {
+      return this.page.waitForSelector('.download-link-menu')
+    }).then(() => {
+      return this.page.evaluate(() => {
         return document.querySelector('.download-link-menu').href.split('\'').slice(-2, -1).shift()
       })
     }).then((link) => {
-      return Promise.resolve(link ? this.baseUrl + link : link)
+      return link ? this.baseUrl + link : link
     })
   }
 
@@ -176,7 +196,7 @@ class IdowaLoader extends Chrome {
       shell.exec(command, {silent: true})
 
       if (filesize(filename) < 1000000) {
-        fs.unlink(filename)
+        fs.unlinkSync(filename)
 
         return Promise.reject(new Error('download failed'))
       }
@@ -184,22 +204,24 @@ class IdowaLoader extends Chrome {
   }
 
   login () {
-    return this.evaluate(() => {
+    return this.page.evaluate(() => {
       return document.querySelectorAll('.red button').length === 0
     }).then((authenticated) => {
       if (authenticated) {
         return true
       }
 
-      return this.evaluate((user, password) => {
-        document.querySelector('input[name="email"]').value = user
-        document.querySelector('input[name="password"]').value = password
-        document.querySelector('.red button').click()
-      }, null, this.user, this.password).then(() => {
-        return Promise.delay(this.wait)
-      }).then(() => {
-        return this.evaluate(() => {
-          return document.querySelectorAll('.red button').length === 0
+      return Promise.delay(this.wait).then(() => {
+        return this.page.evaluate((user, password) => {
+          document.querySelector('input[name="email"]').value = user
+          document.querySelector('input[name="password"]').value = password
+          document.querySelector('.red button').click()
+        }, this.user, this.password).then(() => {
+          return Promise.delay(this.wait)
+        }).then(() => {
+          return this.page.evaluate(() => {
+            return document.querySelectorAll('.red button').length === 0
+          })
         })
       })
     })

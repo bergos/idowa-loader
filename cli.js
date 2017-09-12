@@ -1,4 +1,3 @@
-const fs = require('fs')
 const IdowaLoader = require('./IdowaLoader')
 const Promise = require('bluebird')
 
@@ -8,13 +7,10 @@ let log = () => {}
 function init (options) {
   loader = new IdowaLoader(options)
 
-  return loader.start().then(() => {
-    return loader.connect()
-  })
+  return loader.start()
 }
 
 function end () {
-  loader.close()
   loader.stop()
 }
 
@@ -70,11 +66,7 @@ function downloadWithRetry (options, issue, count) {
 
         downloadWithRetry(options, issue, count).catch(reject)
       } else {
-        loader.html().then((html) => {
-          fs.writeFileSync('dump.html', html)
-        }).then(() => {
-          reject(err)
-        })
+        reject(err)
       }
     })
   })
@@ -92,6 +84,7 @@ program
   .option('-t, --to <date>', 'issue date to', (s) => { return new Date(s) })
   .option('-n, --retries <retries>', 'how many times to retry downloading the PDF', parseFloat, 1)
   .option('-o, --output <folder>', 'folder where to store the downloads', '')
+  .option('-s, --show-window', 'show Chrome window')
   .option('-v, --verbose', 'verbose output')
   .parse(process.argv)
 
@@ -111,6 +104,10 @@ if (program.from && !program.to) {
 init(program).then(() => {
   return getIssues(program)
 }).then((issues) => {
+  issues.forEach((issue) => {
+    log('found issue: ' + issue.date.toISOString().slice(0, 10) + ' (' + issue.id + ')')
+  })
+
   return download(program, issues)
 }).then(() => {
   end()
