@@ -5,23 +5,6 @@ const shell = require('shelljs')
 const url = require('url')
 const Promise = require('bluebird')
 
-const months = [
-  'Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'
-]
-
-function parseDate (string) {
-  if (!string) {
-    return null
-  }
-
-  const parts = string.split(', ').pop().split(' ')
-  const day = parseInt(parts[0])
-  const month = months.indexOf(parts[1])
-  const year = parseInt(parts[2])
-
-  return new Date(year, month, day, 12)
-}
-
 function filesize (filename) {
   const stats = fs.statSync(filename)
 
@@ -32,20 +15,11 @@ class IdowaLoader {
   constructor (options) {
     this.user = options.user
     this.password = options.password
-    this.region = options.region
+    this.region = options.region.split(' ').join('_')
     this.output = options.output
-    this.wait = options.wait || 10000
-    this.timeout = options.timeout || 120000
     this.showWindow = options.showWindow
 
-    if (IdowaLoader.laRegions.includes(this.region)) {
-      this.baseUrl = IdowaLoader.baseUrlLa
-    } else {
-      this.baseUrl = IdowaLoader.baseUrlSr
-    }
-
-    this.startUrl = this.baseUrl + 'shelf.act'
-    this.issueUrl = this.baseUrl + 'issue.act'
+    this.baseUrl = 'http://editionarchiv.idowa.de/'
   }
 
   start () {
@@ -58,6 +32,8 @@ class IdowaLoader {
       return this.browser.newPage()
     }).then((page) => {
       this.page = page
+
+      return this.login()
     })
   }
 
@@ -65,133 +41,53 @@ class IdowaLoader {
     return this.browser.close()
   }
 
-  currentIssue () {
-    return this.page.goto(this.startUrl + '?region=' + this.region, {timeout: this.timeout}).then(() => {
-      return this.page.waitForSelector('div.mutationDate')
+  issue (date) {
+    const dateUrl = date.toISOString().split('-').join('').slice(0, 8)
+    const issueUrl = url.resolve(this.baseUrl, 'edition/data/' + dateUrl + '/01/' + this.region + '/page.jsp')
+
+    return this.page.goto(issueUrl, {waitUntil: 'networkidle'}).then(() => {
+      return Promise.delay(500)
     }).then(() => {
       return this.page.evaluate(() => {
-        const element = document.querySelector('div.mutationDate')
+        const downloadLink = document.getElementById('getpdf_pict')
 
-        return {
-          date: element.innerText,
-          id: parseInt(element.parentElement.parentElement.querySelector('a.issueLink').href.split('\'')[1])
-        }
-      }).then((issue) => {
-        issue.date = parseDate(issue.date)
-
-        return issue
+        return downloadLink && downloadLink.href
       })
-    })
-  }
-
-  previousIssues () {
-    return this.page.goto(this.startUrl + '?region=' + this.region, {timeout: this.timeout}).then(() => {
-      return this.page.waitForSelector('#link-continous-shelf')
-    }).then(() => {
-      return this.page.evaluate(() => {
-        return new Promise((resolve) => {
-          let count = 0
-
-          function loadMore () {
-            const block = document.getElementById('link-continous-shelf')
-
-            if (block.style.display === 'none' || count > 5) {
-              return resolve()
-            }
-
-            block.querySelector('a').click()
-
-            count++
-
-            // wait till next issues show up
-            setTimeout(loadMore, 1000)
-          }
-
-          loadMore()
-        })
-      })
-    }).then(() => {
-      // wait till all issues are listed
-      return Promise.delay(10000)
-    }).then(() => {
-      return this.page.evaluate(() => {
-        let issues = []
-        const elements = document.querySelectorAll('span.mutationDate')
-
-        for (let i = 0; i < elements.length; i++) {
-          issues.push({
-            date: elements[i].innerText,
-            id: elements[i].attributes.rel.value.split('-').pop()
-          })
-        }
-
-        return issues
-      }).then((issues) => {
-        return issues.map((issue) => {
-          issue.date = parseDate(issue.date)
-
-          return issue
-        })
-      })
-    })
-  }
-
-  issues () {
-    return this.currentIssue().then((current) => {
-      return this.previousIssues().then((previous) => {
-        let issues = [current].concat(previous)
-
-        issues = issues.reduce((issues, issue) => {
-          issues[issue.id] = issue
-
-          return issues
-        }, {})
-
-        issues = Object.keys(issues).sort().map((id) => {
-          return issues[id]
-        })
-
-        return issues
-      })
-    })
-  }
-
-  downloadLink (id) {
-    return this.page.goto(this.issueUrl + '?issueId=' + id, {timeout: this.timeout}).then(() => {
-      return this.login()
-    }).then((authenticated) => {
-      return this.page.goto(this.issueUrl + '?issueId=' + id, {timeout: this.timeout})
-    }).then(() => {
-      return this.login()
-    }).then((authenticated) => {
-      if (!authenticated) {
-        return Promise.reject(new Error('authentication failed'))
+    }).then((download) => {
+      if (!download) {
+        return null
       }
-    }).then(() => {
-      // loading the issue can take really long...
-      return Promise.delay(240000)
-    }).then(() => {
-      return this.page.waitForSelector('.download-link-menu')
-    }).then(() => {
-      return this.page.evaluate(() => {
-        return document.querySelector('.download-link-menu').href.split('\'').slice(-2, -1).shift()
-      })
-    }).then((link) => {
-      return link ? this.baseUrl + link : link
+
+      return {
+        date: date,
+        download: download
+      }
     })
   }
 
-  download (id) {
-    return this.downloadLink(id).then((link) => {
-      const filename = path.resolve(this.output, url.parse(link).query.split('&').filter((p) => {
-        return p.indexOf('downloadFileName') === 0
-      }).shift().split('=').pop())
+  issues (start, end) {
+    const range = []
 
-      if (shell.test('-f', filename)) {
+    for (let current = start.valueOf(); current <= end.valueOf(); current += 24 * 60 * 60 * 1000) {
+      range.push(new Date(current))
+    }
+
+    return Promise.map(range, (date) => {
+      return this.issue(date)
+    }, {concurrency: 1}).then((issues) => {
+      return issues.filter(issue => issue)
+    })
+  }
+
+  download (issue) {
+    return Promise.resolve().then(() => {
+      const filename = this.filename(issue)
+
+      if (this.exists(issue)) {
         return
       }
 
-      const command = 'wget --output-document="' + filename + '" "' + link + '"'
+      const command = 'wget --output-document="' + filename + '" "' + issue.download + '"'
 
       shell.exec(command, {silent: true})
 
@@ -203,35 +99,27 @@ class IdowaLoader {
     })
   }
 
-  login () {
-    return this.page.evaluate(() => {
-      return document.querySelectorAll('.red button').length === 0
-    }).then((authenticated) => {
-      if (authenticated) {
-        return true
-      }
+  filename (issue) {
+    return path.resolve(this.output, issue.date.toISOString().slice(0, 10) + '_' + this.region + '.pdf')
+  }
 
-      return Promise.delay(this.wait).then(() => {
-        return this.page.evaluate((user, password) => {
-          document.querySelector('input[name="email"]').value = user
-          document.querySelector('input[name="password"]').value = password
-          document.querySelector('.red button').click()
-        }, this.user, this.password).then(() => {
-          return Promise.delay(this.wait)
-        }).then(() => {
-          return this.page.evaluate(() => {
-            return document.querySelectorAll('.red button').length === 0
-          })
-        })
-      })
+  exists (issue) {
+    return shell.test('-f', this.filename(issue))
+  }
+
+  login () {
+    return this.page.goto(this.baseUrl, {waitUntil: 'networkidle'}).then(() => {
+      return Promise.delay(500)
+    }).then(() => {
+      return this.page.evaluate((user, password) => {
+        document.getElementById('benutzername').value = user
+        document.getElementById('webpasswort').value = password
+        document.getElementById('login_button').click()
+      }, this.user, this.password)
+    }).then(() => {
+      return Promise.delay(500)
     })
   }
 }
-
-IdowaLoader.baseUrlSr = 'https://epaper.straubinger-tagblatt.de/'
-IdowaLoader.baseUrlLa = 'https://epaper.landshuter-zeitung.de/'
-IdowaLoader.laRegions = [
-  'hal', 'laz', 'mos', 'lar', 'vib'
-]
 
 module.exports = IdowaLoader

@@ -20,6 +20,7 @@
   },
   "homepage": "https://github.com/bergos/idowa-loader",
   "dependencies": {
+    "bluebird": "^3.5.0",
     "commander": "^2.9.0",
     "puppeteer": "^0.10.2",
     "shelljs": "^0.7.7"

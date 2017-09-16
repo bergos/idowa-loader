@@ -15,73 +15,36 @@ function end () {
 }
 
 function getIssues (options) {
-  if (options.all) {
-    log('search for all issues...')
+  log('search for issues...')
 
-    return loader.issues()
-  }
-
-  if (options.from) {
-    log('search for issues from ' + options.from.toISOString().slice(0, 10) + ' to ' + options.to.toISOString().slice(0, 10) + '...')
-
-    return loader.issues().then((issues) => {
-      return issues.map((issue) => {
-        issue.date = new Date(issue.date.toISOString().slice(0, 10))
-
-        return issue
-      }).filter((issue) => {
-        return issue.date.valueOf() >= options.from.valueOf() && issue.date.valueOf() <= options.to.valueOf()
-      })
-    })
-  }
-
-  log('search for current issue...')
-
-  return loader.currentIssue().then((issue) => {
-    return [issue]
+  return loader.issues(options.from || options.date, options.to).then((issues) => {
+    return issues
   })
 }
 
 function download (options, issues) {
-  if (issues.length === 0) {
-    return Promise.reject(new Error('no issues found'))
-  }
-
   return Promise.map(issues, (issue) => {
-    log('download issue: ' + issue.date.toISOString().slice(0, 10) + '(' + issue.id + ')')
+    if (loader.exists(issue)) {
+      log('ignore existing issue: ' + issue.date.toISOString().slice(0, 10))
 
-    return downloadWithRetry(options, issue)
+      return
+    }
+
+    log('download issue: ' + issue.date.toISOString().slice(0, 10))
+
+    return loader.download(issue)
   }, {concurrency: 1})
 }
 
-function downloadWithRetry (options, issue, count) {
-  count = count || 0
-
-  return new Promise((resolve, reject) => {
-    loader.download(issue.id).then(resolve).catch((err) => {
-      count++
-
-      if (count < options.retries) {
-        log('retry: ' + count)
-
-        downloadWithRetry(options, issue, count).catch(reject)
-      } else {
-        reject(err)
-      }
-    })
-  })
-}
-
-let program = require('commander')
+const program = require('commander')
 
 program
   .option('-u, --user <user>', 'user')
   .option('-p, --password <password>', 'password')
-  .option('-r, --region <region>', 'region')
-  .option('-a, --all', 'download all available issues')
+  .option('-r, --region <region>', 'region ("Dingolfinger_Anzeiger", "Landshuter Zeitung")')
   .option('-d, --date <date>', 'issue date', (s) => { return new Date(s) })
-  .option('-f, --from <date>', 'issue date from', (s) => { return new Date(s) })
-  .option('-t, --to <date>', 'issue date to', (s) => { return new Date(s) })
+  .option('-f, --from <date>', 'issue date from')
+  .option('-t, --to <date>', 'issue date to')
   .option('-n, --retries <retries>', 'how many times to retry downloading the PDF', parseFloat, 1)
   .option('-o, --output <folder>', 'folder where to store the downloads', '')
   .option('-s, --show-window', 'show Chrome window')
@@ -97,7 +60,19 @@ if (program.date) {
   program.to = program.date
 }
 
-if (program.from && !program.to) {
+if (program.from) {
+  if (program.from.slice(0, 1) === '-') {
+    program.from = new Date((new Date()).valueOf() - 24 * 60 * 60 * 1000 * parseInt(program.from.slice(1)))
+  } else {
+    program.from = new Date()
+  }
+} else {
+  program.from = new Date()
+}
+
+if (program.to) {
+  program.to = new Date(program.to)
+} else {
   program.to = new Date((new Date()).toISOString().slice(0, 10))
 }
 
@@ -105,7 +80,7 @@ init(program).then(() => {
   return getIssues(program)
 }).then((issues) => {
   issues.forEach((issue) => {
-    log('found issue: ' + issue.date.toISOString().slice(0, 10) + ' (' + issue.id + ')')
+    log('found issue: ' + issue.date.toISOString().slice(0, 10))
   })
 
   return download(program, issues)
