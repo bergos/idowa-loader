@@ -67,8 +67,9 @@ class IdowaLoader {
 
   issues (start, end) {
     const range = []
+    const rangeEnd = end.valueOf() + 24 * 60 * 60 * 1000 - 1
 
-    for (let current = start.valueOf(); current <= end.valueOf(); current += 24 * 60 * 60 * 1000) {
+    for (let current = start.valueOf(); current <= rangeEnd; current += 24 * 60 * 60 * 1000) {
       range.push(new Date(current))
     }
 
